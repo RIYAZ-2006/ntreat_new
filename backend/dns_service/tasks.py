@@ -113,6 +113,27 @@ def parse_spf_record(spf_string):
     
     return parsed
 
+def check_dnssec(domain, max_timeout=8):
+    """
+    Lightweight DNSSEC check: a domain that has DNSSEC enabled publishes
+    DNSKEY records at its own apex. Absence of DNSKEY records is a reliable
+    signal DNSSEC signing is not in use (this does not walk the full chain
+    of trust up to a DS record at the parent zone -- just checks whether
+    the domain itself is publishing signing keys, which is enough for a
+    scoring-level pass/fail rather than a full validator).
+    """
+    dnskey_output = run_dig_with_fallback(domain, 'DNSKEY', max_timeout=max_timeout)
+
+    if dnskey_output is None:
+        return {"enabled": False, "dnskey_count": 0, "warning": "DNSKEY lookup timed out"}
+
+    dnskey_records = [line for line in dnskey_output if line]
+
+    return {
+        "enabled": len(dnskey_records) > 0,
+        "dnskey_count": len(dnskey_records),
+    }
+
 def process_dns_scan(domain, scan_id):
     """
     Background task to perform DNS enumeration with fallback resolvers
@@ -121,7 +142,7 @@ def process_dns_scan(domain, scan_id):
     publish_scan_update(domain, "dns", "processing")
     
     results = {}
-    record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA']
+    record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA', 'CAA']
     errors = []
     
     try:
@@ -151,7 +172,15 @@ def process_dns_scan(domain, scan_id):
             
             if not filtered:
                 errors.append(f"{r_type} records: Not found or resolver timeout")
-        
+
+        # DNSSEC isn't a record type dig can pull in the same loop above --
+        # it's derived from whether DNSKEY records exist at all.
+        if time.time() - overall_start <= max_total_time:
+            results['dnssec'] = check_dnssec(domain)
+        else:
+            errors.append("DNSSEC check skipped: DNS scan timeout exceeded")
+            results['dnssec'] = {"enabled": False, "dnskey_count": 0, "warning": "Skipped due to timeout"}
+
         if errors:
             results['_warnings'] = errors
             
