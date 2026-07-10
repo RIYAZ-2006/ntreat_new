@@ -63,16 +63,19 @@ export default function Home() {
 
     setLoading(true);
 
-    const services = ['dns', 'ip', 'ssl', 'webtech', 'subdomain', 'subdirectory', 'cve','http_security'];
-
     try {
-      await Promise.all(
-        services.map(service =>
-          api.post(`/${service}/scan`, { domain: cleanDomain , domain_name : domain_name}).catch(() => {})
-        )
-      );
+      // Single call to the orchestrator — it handles subdomain discovery,
+      // fanning out to all 7 scan services per domain, and scoring.
+      // Previously this fired 7 separate direct calls; that bypassed
+      // the orchestrator entirely and skipped subdomain discovery + scoring.
+      await api.post('/orchrestator/scan', {
+        domain: cleanDomain,
+        org_name: domain_name.trim() || null,
+      });
 
-      // Save domain_name to backend if provided
+      // Save a friendly display name to the scoring service's scan docs
+      // (separate field from orchestrator's org_name — used by the
+      // grouped-scans view on this page)
       if (domain_name.trim()) {
         await api.post('/scoring/domain-name', {
           domain: cleanDomain,
@@ -82,7 +85,8 @@ export default function Home() {
 
       navigate(`/scan/${cleanDomain}`);
     } catch (err) {
-      console.error('Failed to start scans:', err);
+      console.error('Failed to start scan:', err);
+      alert('Failed to start scan. Please try again.');
     } finally {
       setLoading(false);
     }

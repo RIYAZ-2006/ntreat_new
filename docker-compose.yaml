@@ -1,0 +1,349 @@
+services:
+  # Infrastructure
+  mongodb:
+    image: mongo:6.0
+    container_name: ntreat-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - ntreat-db:/data/db
+    networks:
+      - ntreat-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: ntreat-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - ntreat-net
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./backend
+    container_name: ntreat-api-gateway
+    ports:
+      - "5000:5000"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - AUTH_SERVICE_URL=http://auth-service:5001
+      - SUBDOMAIN_SERVICE_URL=http://subdomain-service:5002
+      - DNS_SERVICE_URL=http://dns-service:5003
+      - IP_SERVICE_URL=http://ip-service:5004
+      - SSL_SERVICE_URL=http://ssl-service:5005
+      - CVE_SERVICE_URL=http://cve-service:5006
+      - SUBDIRECTORY_SERVICE_URL=http://subdirectory-service:5007
+      - WEBTECH_SERVICE_URL=http://webtech-service:5008
+      - SCORING_SERVICE_URL=http://scoring-service:5009
+      - HTTP_SECURITY_SERVICE_URL=http://http_security-service:5010
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  # orchrestator
+  orchrestator:
+    build:
+      context: ./backend
+    container_name: ntreat-orchrestator
+    command: bash -c "cd orchrestor_service && python app.py"
+    ports:
+      - "5011:5011"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5011/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  orchrestator-worker:
+    build:
+      context: ./backend
+    container_name: ntreat-orchrestator-worker
+    command: rq worker orchrestator_queue --url redis://redis:6379/0
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  # Workers
+  fast-worker:
+    build:
+      context: ./backend
+    container_name: ntreat-fast-worker
+    command: python fast_worker.py
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  slow-worker:
+    build:
+      context: ./backend
+    container_name: ntreat-slow-worker
+    command: python slow_worker.py
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  # Microservices
+  auth-service:
+    build:
+      context: ./backend
+    container_name: ntreat-auth-service
+    command: bash -c "cd auth_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  subdomain-service:
+    build:
+      context: ./backend
+    container_name: ntreat-subdomain-service
+    command: bash -c "cd subdomain_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  dns-service:
+    build:
+      context: ./backend
+    container_name: ntreat-dns-service
+    command: bash -c "cd dns_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  ip-service:
+    build:
+      context: ./backend
+    container_name: ntreat-ip-service
+    command: bash -c "cd ip_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  ssl-service:
+    build:
+      context: ./backend
+    container_name: ntreat-ssl-service
+    command: bash -c "cd ssl_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  cve-service:
+    build:
+      context: ./backend
+    container_name: ntreat-cve-service
+    command: bash -c "cd cve_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  subdirectory-service:
+    build:
+      context: ./backend
+    container_name: ntreat-subdirectory-service
+    command: bash -c "cd subdirectory_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5007/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  webtech-service:
+    build:
+      context: ./backend
+    container_name: ntreat-webtech-service
+    command: bash -c "cd webtech_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  http_security-service:
+    build:
+      context: ./backend
+    container_name: ntreat-http_security-service
+    command: bash -c "cd http_security_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+      - ORCHESTRATOR_URL=http://orchrestator:5011
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5010/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  scoring-service:
+    build:
+      context: ./backend
+    container_name: ntreat-scoring-service
+    command: bash -c "cd scoring_service && python app.py"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/ntreat
+      - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5009/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - ntreat-net
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ntreat-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - api-gateway
+    networks:
+      - ntreat-net
+
+networks:
+  ntreat-net:
+    driver: bridge
+
+volumes:
+  ntreat-db:

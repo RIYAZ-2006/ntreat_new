@@ -1,0 +1,14 @@
+flask
+flask-cors
+flask-pymongo
+flask-jwt-extended
+flask-limiter
+flask-caching
+redis
+rq
+requests
+aiohttp
+dnspython
+beautifulsoup4
+cryptography
+python-dotenv
