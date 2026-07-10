@@ -2,7 +2,7 @@ import requests
 import socket
 from shared.database import get_db
 from shared.sse_utlits import publish_scan_update
-from shared.config import Config
+from shared.orchestrator_client import record_service_result
 import datetime
 
 # Ports score_ip() in scoring_service/logic.py checks for — kept in sync
@@ -38,29 +38,12 @@ def get_reverse_dns(ip_address):
         return {"hostname": None, "resolved": False}
 
 
-def _notify_orchestrator(scan_id, domain, service):
-    try:
-        requests.post(f"{Config.ORCHRESTATOR_SERVICE_URL}/job-done", json={
-            "scan_id": scan_id,
-            "domain": domain,
-            "service": service
-        }, timeout=5)
-    except requests.exceptions.RequestException:
-        pass
-
-
 def process_ip_scan(domain, scan_id):
     """
     Background task to perform IP Geolocation + lightweight risk signals
     (open risky ports, reverse DNS) so score_ip() has real data to work with.
     """
     db = get_db()
-    scans_collection = db['scans']
-
-    scans_collection.update_one(
-        {"scan_id": scan_id},
-        {"$set": {"status": "processing", "started_at": datetime.datetime.utcnow()}}
-    )
     publish_scan_update(domain, "ip", "processing")
 
     try:
@@ -95,28 +78,11 @@ def process_ip_scan(domain, scan_id):
             "geo_anomaly": geo_anomaly,
         }
 
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "completed",
-                "completed_at": datetime.datetime.utcnow(),
-                "results": results,
-                "service": "ip"
-            }}
-        )
+        record_service_result(scan_id, domain, "ip", status="completed", results=results)
         publish_scan_update(domain, "ip", "completed", results=results)
-        _notify_orchestrator(scan_id, domain, "ip")
         return results
 
     except Exception as e:
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "failed",
-                "error": str(e),
-                "completed_at": datetime.datetime.utcnow()
-            }}
-        )
+        record_service_result(scan_id, domain, "ip", status="failed", error=str(e))
         publish_scan_update(domain, "ip", "failed", error=str(e))
-        _notify_orchestrator(scan_id, domain, "ip")
         raise e

@@ -66,33 +66,66 @@ def get_scan_status(scan_id):
 def job_done():
     """
     Called by each of the 7 downstream services when they finish a single
-    domain's scan. Tracks per-domain completion, scores that domain once its
-    7 services are done, then finalizes the whole scan once every domain
-    (root + subdomains) is scored.
+    domain's scan. Each call reports that service's own outcome
+    (status/error/results) into that domain's domain_progress document,
+    scoped by a dotted path (services.<service>, results.<service>) so
+    concurrent scanners for the same domain can never overwrite each
+    other's writes.
+
+    Once all 7 services have reported in, scores that domain (marking it
+    "completed" if every service succeeded, or "partial" if one or more
+    failed), then finalizes the whole scan once every domain is scored.
     """
     data = request.get_json()
     scan_id = data.get('scan_id')
     domain = data.get('domain')
+    service = data.get('service')
+    status = data.get('status', 'completed')
+    error = data.get('error')
+    results = data.get('results')
 
-    if not scan_id or not domain:
-        return jsonify({"error": "scan_id and domain are required"}), 400
+    if not scan_id or not domain or not service:
+        return jsonify({"error": "scan_id, domain, and service are required"}), 400
+
+    update_fields = {
+        f"services.{service}.status": status,
+        f"services.{service}.error": error,
+        "last_updated": datetime.datetime.utcnow(),
+    }
+    # Only persist results on success -- a failed job shouldn't leave stale
+    # or partial result data sitting under results.<service>.
+    if status == "completed":
+        update_fields[f"results.{service}"] = results
 
     updated = domain_progress_collection.find_one_and_update(
         {"scan_id": scan_id, "domain": domain},
-        {"$inc": {"completed_jobs": 1}},
+        {"$inc": {"completed_jobs": 1}, "$set": update_fields},
         return_document=True
     )
 
     if not updated:
-        # domain_progress doc wasn't created for this scan_id/domain — log and bail
+        print(
+            f"[/job-done] No domain_progress match for "
+            f"scan_id={scan_id!r} domain={domain!r} service={service!r}"
+        )
         return jsonify({"error": "No matching domain_progress record"}), 404
 
     if updated['completed_jobs'] >= updated['total_jobs']:
+        failed_services = [
+            s for s, v in updated['services'].items() if v.get('status') == 'failed'
+        ]
+        final_status = "partial" if failed_services else "completed"
+
+        domain_progress_collection.update_one(
+            {"scan_id": scan_id, "domain": domain},
+            {"$set": {"status": final_status}}
+        )
+
         _score_single_domain(scan_id, domain)
 
         remaining = domain_progress_collection.count_documents({
             "scan_id": scan_id,
-            "status": {"$ne": "completed"}
+            "status": {"$nin": ["completed", "partial"]}
         })
         if remaining == 0:
             _finalize_scan_score(scan_id)
@@ -104,16 +137,21 @@ def _score_single_domain(scan_id, domain):
     from scoring_service.logic import calculate_domain_score
 
     db = get_db()
-    score_result = calculate_domain_score(domain)
+    doc = domain_progress_collection.find_one({"scan_id": scan_id, "domain": domain})
+    if not doc:
+        return
+
+    failed_services = [s for s, v in doc['services'].items() if v.get('status') == 'failed']
+
+    # calculate_domain_score should treat any service in failed_services as
+    # missing/zero-weighted rather than silently scoring it as if absent --
+    # this closes the "missing data scores 100" bug pattern.
+    score_result = calculate_domain_score(doc['results'], failed_services=failed_services)
 
     db['scores'].update_one(
         {"domain": domain},
         {"$set": {**score_result, "scan_id": scan_id, "calculated_at": datetime.datetime.utcnow()}},
         upsert=True
-    )
-    domain_progress_collection.update_one(
-        {"scan_id": scan_id, "domain": domain},
-        {"$set": {"status": "completed"}}
     )
 
 

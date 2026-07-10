@@ -1,6 +1,3 @@
-from shared.database import get_db
-
-
 # ---------------------------------------------------------------------------
 # Per-service scorers
 # ---------------------------------------------------------------------------
@@ -180,7 +177,7 @@ def score_cve(cve_res: dict) -> dict:
     """
     Max 100 pts.
     Handles the case where version fingerprinting was not possible.
-    
+
     Deductions by CVSS severity:
       - Critical (CVSS >= 9.0) : -20 each, max -60
       - High     (7.0-8.9)     : -10 each, max -40
@@ -501,27 +498,42 @@ SERVICE_SCORERS = {
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def calculate_domain_score(domain: str) -> dict:
-    db = get_db()
-    scans_collection = db['scans']
+def calculate_domain_score(results: dict, failed_services: list = None) -> dict:
+    """
+    Pure function — no DB access. Takes the results dict already assembled
+    by the caller (orchestrator_app.py's _score_single_domain reads this
+    straight off domain_progress.results; scoring_service/app.py's /calculate
+    route does the same after looking up the latest domain_progress doc).
+
+    failed_services: services that errored out for this domain (per
+    domain_progress.services.<name>.status == "failed"). These are excluded
+    from the weighted average entirely, rather than being silently treated
+    as a missing key and scored as if nothing was wrong -- the bug this
+    signature change is closing.
+    """
+    failed_services = failed_services or []
+    results = results or {}
 
     services = list(SERVICE_SCORERS.keys())
     data = {}
+    skipped_services = []
 
     for service in services:
-        scan = scans_collection.find_one(
-            {"domain": domain, "service": service, "status": "completed"},
-            sort=[("completed_at", -1)]
-        )
-        if scan:
-            data[service] = scan.get('results', {})
+        if service in failed_services:
+            skipped_services.append(service)
+            continue
+        svc_results = results.get(service)
+        if svc_results:
+            data[service] = svc_results
+        else:
+            skipped_services.append(service)
 
     # Per-service scores
     service_scores = {}
-    for service, results in data.items():
+    for service, svc_results in data.items():
         scorer = SERVICE_SCORERS.get(service)
         if scorer:
-            service_scores[service] = scorer(results)
+            service_scores[service] = scorer(svc_results)
 
     # Weighted overall score
     total_weight = 0.0
@@ -547,13 +559,16 @@ def calculate_domain_score(domain: str) -> dict:
         for k, v in svc_data.get('penalties', {}).items():
             all_penalties[f"{service}_{k}"] = v
 
+    for service in skipped_services:
+        all_details.append(f"[{service.upper()}] Service data unavailable or failed — excluded from score.")
+
     return {
-        "domain": domain,
         "score": overall_score,
         "grade": overall_grade,
         "details": all_details,
         "penalties": all_penalties,
         "components_analyzed": list(data.keys()),
-        "service_scores": service_scores,    # NEW: per-service breakdown
-        "service_weights": SERVICE_WEIGHTS,  # NEW: for frontend display
+        "skipped_services": skipped_services,  # NEW: which services were excluded and why
+        "service_scores": service_scores,
+        "service_weights": SERVICE_WEIGHTS,
     }

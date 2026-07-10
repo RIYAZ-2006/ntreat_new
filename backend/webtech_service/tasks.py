@@ -12,15 +12,13 @@ if _HERE not in sys.path:
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-import datetime
 import json
 import subprocess
-import requests
 from typing import Optional
 
 from shared.database import get_db
 from shared.sse_utlits import publish_scan_update
-from shared.config import Config
+from shared.orchestrator_client import record_service_result
 
 _DRIVER  = os.path.join(_HERE, "driver.js")
 _EXT_DIR = os.environ.get("WAPPALYZER_EXT_DIR", os.path.join(_HERE, "6.12.2_0"))
@@ -174,59 +172,20 @@ def detect_technologies(domain: str) -> dict:
     }
 
 
-# ── Orchestrator callback ─────────────────────────────────────────────────────
-
-def _notify_orchestrator(scan_id, domain, service):
-    try:
-        requests.post(f"{Config.ORCHRESTATOR_SERVICE_URL}/job-done", json={
-            "scan_id": scan_id,
-            "domain": domain,
-            "service": service
-        }, timeout=5)
-    except requests.exceptions.RequestException:
-        print(f"[_notify_orchestrator] FAILED to reach {Config.ORCHRESTATOR_SERVICE_URL}/job-done for {domain}/{service}: {e}")
-
-
 # ── RQ worker entry point ─────────────────────────────────────────────────────
 
 def process_webtech_scan(domain: str, scan_id: str) -> None:
     """RQ task — detect, persist to MongoDB, emit SSE."""
-    db    = get_db()
-    scans = db["scans"]
-
-    scans.update_one(
-        {"scan_id": scan_id},
-        {"$set": {
-            "status":     "processing",
-            "started_at": datetime.datetime.utcnow(),
-        }},
-    )
+    db = get_db()
     publish_scan_update(domain, "webtech", "processing")
 
     try:
         result = detect_technologies(domain)
 
-        scans.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status":       "completed",
-                "results":      result,
-                "service":      "webtech",
-                "completed_at": datetime.datetime.utcnow(),
-            }},
-        )
+        record_service_result(scan_id, domain, "webtech", status="completed", results=result)
         publish_scan_update(domain, "webtech", "completed")
-        _notify_orchestrator(scan_id, domain, "webtech")
 
     except Exception as exc:
-        scans.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status":       "failed",
-                "error":        str(exc),
-                "completed_at": datetime.datetime.utcnow(),
-            }},
-        )
+        record_service_result(scan_id, domain, "webtech", status="failed", error=str(exc))
         publish_scan_update(domain, "webtech", "failed")
-        _notify_orchestrator(scan_id, domain, "webtech")
         raise

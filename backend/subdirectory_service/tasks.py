@@ -5,8 +5,7 @@ import re
 import requests
 from shared.database import get_db
 from shared.sse_utlits import publish_scan_update
-from shared.config import Config
-import datetime
+from shared.orchestrator_client import record_service_result
 
 DIR_LISTING_SIGNATURES = [
     r"index of /",
@@ -123,33 +122,13 @@ def check_directory_listing(paths):
     return listing_found
 
 
-def _notify_orchestrator(scan_id, domain, service):
-    try:
-        requests.post(f"{Config.ORCHRESTATOR_SERVICE_URL}/job-done", json={
-            "scan_id": scan_id,
-            "domain": domain,
-            "service": service
-        }, timeout=5)
-    except requests.exceptions.RequestException:
-        print(f"[_notify_orchestrator] FAILED to reach {Config.ORCHRESTATOR_SERVICE_URL}/job-done for {domain}/{service}: {e}")
-
-
 def process_subdirectory_scan(domain, scan_id, aggressive=False):
     db = get_db()
-    scans_collection = db['scans']
-    scans_collection.update_one(
-        {"scan_id": scan_id},
-        {"$set": {"status": "processing", "started_at": datetime.datetime.utcnow()}}
-    )
     publish_scan_update(domain, "subdirectory", "processing")
 
     if not shutil.which("gobuster"):
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": "gobuster not installed", "completed_at": datetime.datetime.utcnow()}}
-        )
+        record_service_result(scan_id, domain, "subdirectory", status="failed", error="gobuster not installed")
         publish_scan_update(domain, "subdirectory", "failed", error="gobuster not installed")
-        _notify_orchestrator(scan_id, domain, "subdirectory")
         return
 
     try:
@@ -238,44 +217,29 @@ def process_subdirectory_scan(domain, scan_id, aggressive=False):
 
         directory_listings = check_directory_listing(all_paths)
 
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "completed",
-                "completed_at": datetime.datetime.utcnow(),
-                "results": {
-                    "found_paths": all_paths,
-                    "exposed_paths": [p['path'] for p in all_paths if p['status_code'] in ('200', '301', '302', '403')],
-                    "directory_listings": directory_listings,
-                    "count": len(all_paths),
-                    "base_url": base_url,
-                    "phase_reached": phase_reached,
-                    "wordlists_used": wordlists_used,
-                    "total_tested": total_tested,
-                    "status_counts": all_status_counts,
-                    "aggressive_mode": aggressive
-                },
-                "service": "subdirectory"
-            }}
-        )
+        results = {
+            "found_paths": all_paths,
+            "exposed_paths": [p['path'] for p in all_paths if p['status_code'] in ('200', '301', '302', '403')],
+            "directory_listings": directory_listings,
+            "count": len(all_paths),
+            "base_url": base_url,
+            "phase_reached": phase_reached,
+            "wordlists_used": wordlists_used,
+            "total_tested": total_tested,
+            "status_counts": all_status_counts,
+            "aggressive_mode": aggressive
+        }
+
+        record_service_result(scan_id, domain, "subdirectory", status="completed", results=results)
         publish_scan_update(domain, "subdirectory", "completed",
                           results={"count": len(all_paths), "phase_reached": phase_reached})
-        _notify_orchestrator(scan_id, domain, "subdirectory")
         return all_paths
 
     except subprocess.TimeoutExpired:
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": "Scan timeout", "completed_at": datetime.datetime.utcnow()}}
-        )
+        record_service_result(scan_id, domain, "subdirectory", status="failed", error="Scan timeout")
         publish_scan_update(domain, "subdirectory", "failed", error="Scan timeout")
-        _notify_orchestrator(scan_id, domain, "subdirectory")
         raise
     except Exception as e:
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": str(e), "completed_at": datetime.datetime.utcnow()}}
-        )
+        record_service_result(scan_id, domain, "subdirectory", status="failed", error=str(e))
         publish_scan_update(domain, "subdirectory", "failed", error=str(e))
-        _notify_orchestrator(scan_id, domain, "subdirectory")
         raise e

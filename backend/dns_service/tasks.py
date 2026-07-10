@@ -3,7 +3,7 @@ import re
 import requests
 from shared.database import get_db
 from shared.sse_utlits import publish_scan_update
-from shared.config import Config
+from shared.orchestrator_client import record_service_result
 import datetime
 import shutil
 
@@ -113,28 +113,11 @@ def parse_spf_record(spf_string):
     
     return parsed
 
-def _notify_orchestrator(scan_id, domain, service):
-    """Report job completion (success or failure) back to the orchestrator"""
-    try:
-        requests.post(f"{Config.ORCHRESTATOR_SERVICE_URL}/job-done", json={
-            "scan_id": scan_id,
-            "domain": domain,
-            "service": service
-        }, timeout=5)
-    except requests.exceptions.RequestException:
-        pass  # don't crash the job just because the callback failed
-
 def process_dns_scan(domain, scan_id):
     """
     Background task to perform DNS enumeration with fallback resolvers
     """
     db = get_db()
-    scans_collection = db['scans']
-    
-    scans_collection.update_one(
-        {"scan_id": scan_id},
-        {"$set": {"status": "processing", "started_at": datetime.datetime.utcnow()}}
-    )
     publish_scan_update(domain, "dns", "processing")
     
     results = {}
@@ -172,28 +155,11 @@ def process_dns_scan(domain, scan_id):
         if errors:
             results['_warnings'] = errors
             
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "completed",
-                "completed_at": datetime.datetime.utcnow(),
-                "results": results,
-                "service": "dns"
-            }}
-        )
+        record_service_result(scan_id, domain, "dns", status="completed", results=results)
         publish_scan_update(domain, "dns", "completed", results=results)
-        _notify_orchestrator(scan_id, domain, "dns")
         return results
         
     except Exception as e:
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "failed",
-                "error": str(e),
-                "completed_at": datetime.datetime.utcnow()
-            }}
-        )
+        record_service_result(scan_id, domain, "dns", status="failed", error=str(e))
         publish_scan_update(domain, "dns", "failed", error=str(e))
-        _notify_orchestrator(scan_id, domain, "dns")
         raise e

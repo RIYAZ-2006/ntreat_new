@@ -8,8 +8,7 @@ import ssl
 from datetime import datetime as dt_class
 from shared.database import get_db
 from shared.sse_utlits import publish_scan_update
-from shared.config import Config
-import datetime
+from shared.orchestrator_client import record_service_result
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.x509.oid import ExtensionOID, AuthorityInformationAccessOID
@@ -240,33 +239,14 @@ def check_ocsp_status(domain, port=443):
         return {"status": "error", "message": f"OCSP check failed: {error_msg}", "skip": True}
 
 
-def _notify_orchestrator(scan_id, domain, service):
-    try:
-        requests.post(f"{Config.ORCHRESTATOR_SERVICE_URL}/job-done", json={
-            "scan_id": scan_id,
-            "domain": domain,
-            "service": service
-        }, timeout=5)
-    except requests.exceptions.RequestException:
-        pass
-
-
 def process_ssl_scan(domain, scan_id):
     db = get_db()
-    scans_collection = db['scans']
-    scans_collection.update_one(
-        {"scan_id": scan_id},
-        {"$set": {"status": "processing", "started_at": datetime.datetime.utcnow()}}
-    )
     publish_scan_update(domain, "ssl", "processing")
 
     if not shutil.which("sslscan"):
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": "sslscan not found. Install with: apt-get install sslscan", "completed_at": datetime.datetime.utcnow()}}
-        )
+        error_msg = "sslscan not found. Install with: apt-get install sslscan"
+        record_service_result(scan_id, domain, "ssl", status="failed", error=error_msg)
         publish_scan_update(domain, "ssl", "failed", error="sslscan not found")
-        _notify_orchestrator(scan_id, domain, "ssl")
         return
 
     try:
@@ -312,24 +292,11 @@ def process_ssl_scan(domain, scan_id):
 
         results['ocsp'] = check_ocsp_status(domain)
 
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "completed",
-                "completed_at": datetime.datetime.utcnow(),
-                "results": results,
-                "service": "ssl"
-            }}
-        )
+        record_service_result(scan_id, domain, "ssl", status="completed", results=results)
         publish_scan_update(domain, "ssl", "completed", results=results)
-        _notify_orchestrator(scan_id, domain, "ssl")
         return results
 
     except Exception as e:
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": str(e), "completed_at": datetime.datetime.utcnow()}}
-        )
+        record_service_result(scan_id, domain, "ssl", status="failed", error=str(e))
         publish_scan_update(domain, "ssl", "failed", error=str(e))
-        _notify_orchestrator(scan_id, domain, "ssl")
         raise e

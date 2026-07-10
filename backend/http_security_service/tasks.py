@@ -1,12 +1,11 @@
 import requests
 import re
-import datetime
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from shared.database import get_db
 from shared.sse_utlits import publish_scan_update
-from shared.config import Config
+from shared.orchestrator_client import record_service_result
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
@@ -372,28 +371,10 @@ def compute_score(results: dict) -> tuple[int, str]:
              "C" if score >= 60 else "D" if score >= 40 else "F")
     return score, grade
 
-# ── orchestrator callback ────────────────────────────────────────────────────
-
-def _notify_orchestrator(scan_id, domain, service):
-    try:
-        requests.post(f"{Config.ORCHRESTATOR_SERVICE_URL}/job-done", json={
-            "scan_id": scan_id,
-            "domain": domain,
-            "service": service
-        }, timeout=5)
-    except requests.exceptions.RequestException:
-        pass
-
 # ── master task ───────────────────────────────────────────────────────────────
 
 def process_http_security_scan(domain: str, scan_id: str):
     db = get_db()
-    col = db["scans"]
-
-    col.update_one(
-        {"scan_id": scan_id},
-        {"$set": {"status": "processing", "started_at": datetime.datetime.utcnow()}}
-    )
     publish_scan_update(domain, "http_security", "processing")
 
     try:
@@ -422,28 +403,11 @@ def process_http_security_scan(domain: str, scan_id: str):
 
         results["score"], results["grade"] = compute_score(results)
 
-        col.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "completed",
-                "completed_at": datetime.datetime.utcnow(),
-                "results": results,
-                "service": "http_security",
-            }}
-        )
+        record_service_result(scan_id, domain, "http_security", status="completed", results=results)
         publish_scan_update(domain, "http_security", "completed", results=results)
-        _notify_orchestrator(scan_id, domain, "http_security")
         return results
 
     except Exception as e:
-        col.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "failed",
-                "error": str(e),
-                "completed_at": datetime.datetime.utcnow(),
-            }}
-        )
+        record_service_result(scan_id, domain, "http_security", status="failed", error=str(e))
         publish_scan_update(domain, "http_security", "failed", error=str(e))
-        _notify_orchestrator(scan_id, domain, "http_security")
         raise

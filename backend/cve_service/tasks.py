@@ -10,7 +10,7 @@ import threading
 import time
 from shared.database import get_db
 from shared.sse_utlits import publish_scan_update
-from shared.config import Config
+from shared.orchestrator_client import record_service_result
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -21,10 +21,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 _nvd_lock = threading.Lock()
 
 
-def detect_cdn_or_proxy(domain, db):
-    """Check if domain is behind CDN/proxy by checking DNS and SSL data"""
-    dns_scan = db['scans'].find_one({"domain": domain, "service": "dns", "status": "completed"})
-    ssl_scan = db['scans'].find_one({"domain": domain, "service": "ssl", "status": "completed"})
+def detect_cdn_or_proxy(domain, scan_id, db):
+    """Check if domain is behind CDN/proxy by checking DNS and SSL data.
+    Reads from domain_progress (this scan's own results.dns / results.ssl)
+    rather than the old shared `scans` collection, since dns_service and
+    ssl_service now write their results there via record_service_result()."""
+    domain_doc = db['domain_progress'].find_one({"scan_id": scan_id, "domain": domain})
+    dns_results = (domain_doc or {}).get('results', {}).get('dns')
+    ssl_results = (domain_doc or {}).get('results', {}).get('ssl')
 
     cdn_indicators = {
         'cloudflare': False,
@@ -34,8 +38,8 @@ def detect_cdn_or_proxy(domain, db):
         'cdn': False
     }
 
-    if dns_scan and dns_scan.get('results'):
-        cname_records = dns_scan['results'].get('CNAME', [])
+    if dns_results:
+        cname_records = dns_results.get('CNAME', [])
         for cname in cname_records:
             cname_lower = cname.lower()
             if 'cloudflare' in cname_lower:
@@ -49,8 +53,8 @@ def detect_cdn_or_proxy(domain, db):
             elif 'cdn' in cname_lower:
                 cdn_indicators['cdn'] = True
 
-    if ssl_scan and ssl_scan.get('results'):
-        cert = ssl_scan['results'].get('certificate', {})
+    if ssl_results:
+        cert = ssl_results.get('certificate', {})
         issuer = cert.get('issuer', '').lower()
         if 'cloudflare' in issuer:
             cdn_indicators['cloudflare'] = True
@@ -339,33 +343,13 @@ def perform_cve_lookup(version_fingerprint):
     }
 
 
-def _notify_orchestrator(scan_id, domain, service):
-    try:
-        requests.post(f"{Config.ORCHRESTATOR_SERVICE_URL}/job-done", json={
-            "scan_id": scan_id,
-            "domain": domain,
-            "service": service
-        }, timeout=5)
-    except requests.exceptions.RequestException:
-        pass
-
-
 def process_cve_scan(domain, scan_id):
     db = get_db()
-    scans_collection = db['scans']
-    scans_collection.update_one(
-        {"scan_id": scan_id},
-        {"$set": {"status": "processing", "started_at": datetime.datetime.utcnow()}}
-    )
     publish_scan_update(domain, "cve", "processing")
 
     if not shutil.which("nmap"):
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": "nmap not found", "completed_at": datetime.datetime.utcnow()}}
-        )
+        record_service_result(scan_id, domain, "cve", status="failed", error="nmap not found")
         publish_scan_update(domain, "cve", "failed", error="nmap not found")
-        _notify_orchestrator(scan_id, domain, "cve")
         return
 
     try:
@@ -385,7 +369,7 @@ def process_cve_scan(domain, scan_id):
             }
         }
 
-        behind_cdn, cdn_name = detect_cdn_or_proxy(domain, db)
+        behind_cdn, cdn_name = detect_cdn_or_proxy(domain, scan_id, db)
         if behind_cdn:
             results['cdn_detected'] = True
             results['cdn_name'] = cdn_name
@@ -499,32 +483,16 @@ def process_cve_scan(domain, scan_id):
             results['cve_scan'] = []
             results['total_vulnerabilities'] = 0  # was "Not Detected" string — now always an int
 
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {
-                "status": "completed",
-                "completed_at": datetime.datetime.utcnow(),
-                "results": results,
-                "service": "cve"
-            }}
-        )
+        record_service_result(scan_id, domain, "cve", status="completed", results=results)
         publish_scan_update(domain, "cve", "completed", results=results)
-        _notify_orchestrator(scan_id, domain, "cve")
         return results
 
     except subprocess.TimeoutExpired:
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": "Nmap scan timed out after 10 minutes", "completed_at": datetime.datetime.utcnow()}}
-        )
-        publish_scan_update(domain, "cve", "failed", error="Nmap scan timed out")
-        _notify_orchestrator(scan_id, domain, "cve")
+        error_msg = "Nmap scan timed out after 10 minutes"
+        record_service_result(scan_id, domain, "cve", status="failed", error=error_msg)
+        publish_scan_update(domain, "cve", "failed", error=error_msg)
 
     except Exception as e:
-        scans_collection.update_one(
-            {"scan_id": scan_id},
-            {"$set": {"status": "failed", "error": str(e), "completed_at": datetime.datetime.utcnow()}}
-        )
+        record_service_result(scan_id, domain, "cve", status="failed", error=str(e))
         publish_scan_update(domain, "cve", "failed", error=str(e))
-        _notify_orchestrator(scan_id, domain, "cve")
         raise e

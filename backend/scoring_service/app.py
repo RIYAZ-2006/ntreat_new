@@ -2,7 +2,6 @@ import sys
 import os
 import datetime
 import json
-import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -15,6 +14,24 @@ from scoring_service.logic import calculate_domain_score
 app = Flask(__name__)
 redis_conn = get_redis_connection()
 # app.config['JWT_SECRET_KEY'] = Config.JWT_SECRET_KEY
+
+# Per-domain scanner services now tracked in domain_progress (see
+# shared/orchestrator_client.py + orchestrator_service). "subdomain" is
+# intentionally NOT in this list -- it's a scan-level (not per-domain) step
+# still tracked on the root `scans` document by subdomain_service, since it
+# runs once per scan_id before the fan-out, not once per domain.
+FAST_SERVICES = ['dns', 'ip', 'ssl', 'webtech']
+SLOW_SERVICES = ['subdirectory', 'cve', 'http_security']
+ALL_SERVICES = FAST_SERVICES + SLOW_SERVICES
+
+
+def _get_latest_domain_progress(db, domain):
+    """Latest domain_progress doc for this domain, across any scan_id."""
+    return db['domain_progress'].find_one(
+        {"domain": domain},
+        sort=[("created_at", -1)]
+    )
+
 
 @app.route('/health')
 def health():
@@ -40,21 +57,40 @@ def set_domain_name():
 
 @app.route('/calculate', methods=['POST'])
 def calculate():
+    """
+    On-demand score recalculation for a domain. Looks up the latest
+    domain_progress doc (across any scan_id) rather than querying the old
+    per-service `scans` documents, since scanners no longer write there.
+    """
     data = request.get_json()
     domain = data.get('domain')
 
     if not domain:
         return jsonify({"error": "Domain is required"}), 400
 
-    result = calculate_domain_score(domain)
-
-    # Save score to DB
     db = get_db()
+    progress_doc = _get_latest_domain_progress(db, domain)
+
+    if not progress_doc:
+        return jsonify({"error": f"No scan data found for domain {domain}"}), 404
+
+    failed_services = [
+        s for s, v in progress_doc.get('services', {}).items()
+        if v.get('status') == 'failed'
+    ]
+
+    result = calculate_domain_score(
+        progress_doc.get('results', {}),
+        failed_services=failed_services
+    )
+    result['domain'] = domain
+
     scores_collection = db['scores']
     scores_collection.update_one(
         {"domain": domain},
         {"$set": {
             **result,
+            "scan_id": progress_doc.get('scan_id'),
             "calculated_at": datetime.datetime.utcnow()
         }},
         upsert=True
@@ -152,51 +188,62 @@ def get_grouped_scans():
 
 @app.route('/scan/summary/<domain>', methods=['GET'])
 def get_scan_summary(domain):
-    """Consolidated endpoint: returns complete scan data in one call"""
+    """
+    Consolidated endpoint: returns complete scan data in one call.
 
-    # Check Redis cache first for completed scans
+    Reads per-service status/results from the latest domain_progress doc
+    for this domain (across any scan_id) rather than the old per-service
+    `scans` documents, since scanners now write there via
+    record_service_result() instead.
+    """
     cache_key = f"scan_summary:{domain}"
     cached = redis_conn.get(cache_key)
     if cached:
         return Response(cached, mimetype='application/json')
 
     db = get_db()
+    progress_doc = _get_latest_domain_progress(db, domain)
 
-    # Define services
-    fast_services = ['dns', 'ip', 'ssl', 'webtech']
-    slow_services = ['subdomain', 'subdirectory', 'cve', 'http_security']
-    all_services = fast_services + slow_services
-
-    # Fetch latest scan for each service
     scans = {}
     fast_completed = 0
     slow_completed = 0
     all_completed = True
     any_started = False
 
-    for service in all_services:
-        scan = db['scans'].find_one(
-            {"domain": domain, "service": service},
-            {"_id": 0},
-            sort=[("created_at", -1)]
-        )
-        if scan:
-            any_started = True
-            scans[service] = scan
+    if progress_doc:
+        services_status = progress_doc.get('services', {})
+        results_map = progress_doc.get('results', {})
 
-            if scan['status'] in ['completed', 'failed']:
-                if service in fast_services:
-                    fast_completed += 1
+        for service in ALL_SERVICES:
+            svc_status = services_status.get(service)
+            if svc_status:
+                any_started = True
+                status = svc_status.get('status', 'pending')
+                scans[service] = {
+                    "status": status,
+                    "error": svc_status.get('error'),
+                    "results": results_map.get(service),
+                }
+                if status in ('completed', 'failed'):
+                    if service in FAST_SERVICES:
+                        fast_completed += 1
+                    else:
+                        slow_completed += 1
                 else:
-                    slow_completed += 1
+                    all_completed = False
             else:
                 all_completed = False
-        else:
-            all_completed = False
+    else:
+        all_completed = False
 
-    # Determine overall status
+    # Determine overall status. Prefer domain_progress's own rollup status
+    # (set once completed_jobs >= total_jobs in /job-done) since it already
+    # accounts for "partial" -- falls back to the per-service tally above
+    # for a domain still mid-scan.
     if not any_started:
         overall_status = "not_started"
+    elif progress_doc and progress_doc.get('status') in ('completed', 'partial'):
+        overall_status = "completed"
     elif all_completed:
         overall_status = "completed"
     else:
@@ -208,10 +255,22 @@ def get_scan_summary(domain):
         score_doc = db['scores'].find_one({"domain": domain}, {"_id": 0})
         if not score_doc:
             try:
-                score_result = calculate_domain_score(domain)
+                failed_services = [
+                    s for s, v in (progress_doc or {}).get('services', {}).items()
+                    if v.get('status') == 'failed'
+                ]
+                score_result = calculate_domain_score(
+                    (progress_doc or {}).get('results', {}),
+                    failed_services=failed_services
+                )
+                score_result['domain'] = domain
                 db['scores'].update_one(
                     {"domain": domain},
-                    {"$set": {**score_result, "calculated_at": datetime.datetime.utcnow()}},
+                    {"$set": {
+                        **score_result,
+                        "scan_id": (progress_doc or {}).get('scan_id'),
+                        "calculated_at": datetime.datetime.utcnow()
+                    }},
                     upsert=True
                 )
                 score = score_result
@@ -234,11 +293,11 @@ def get_scan_summary(domain):
         "scans": scans,
         "score": score,
         "fast_services": {
-            "total": len(fast_services),
+            "total": len(FAST_SERVICES),
             "completed": fast_completed
         },
         "slow_services": {
-            "total": len(slow_services),
+            "total": len(SLOW_SERVICES),
             "completed": slow_completed
         }
     }
@@ -305,6 +364,7 @@ def delete_scans(domain):
     try:
         db = get_db()
         result = db['scans'].delete_many({"domain": domain})
+        db['domain_progress'].delete_many({"domain": domain})
 
         # Also clear Redis cache
         cache_key = f"scan_summary:{domain}"
@@ -319,7 +379,7 @@ def delete_scans(domain):
 
 @app.route('/debug/summary/<domain>', methods=['GET'])
 def debug_scan_summary(domain):
-    """Debug route to inspect raw scan data from MongoDB"""
+    """Debug route to inspect raw scan data from domain_progress"""
     report = {
         "domain": domain,
         "redis": None,
@@ -341,44 +401,42 @@ def debug_scan_summary(domain):
             "error": str(e)
         }
 
-    # Check MongoDB for each service
     db = get_db()
-    fast_services = ['dns', 'ip', 'ssl', 'webtech']
-    slow_services = ['subdomain', 'subdirectory', 'cve', 'http_security']
-    all_services = fast_services + slow_services
+    progress_doc = _get_latest_domain_progress(db, domain)
 
     fast_completed = 0
     slow_completed = 0
 
-    for service in all_services:
-        scan = db['scans'].find_one(
-            {"domain": domain, "service": service},
-            {"_id": 0},
-            sort=[("created_at", -1)]
-        )
-        if scan:
-            report["services"][service] = {
-                "found": True,
-                "status": scan.get("status"),
-                "has_results": "results" in scan,
-                "results_keys": list(scan["results"].keys()) if "results" in scan else [],
-                "error": scan.get("error"),
-                "created_at": str(scan.get("created_at")),
-                "completed_at": str(scan.get("completed_at")),
-            }
-            if scan["status"] in ["completed", "failed"]:
-                if service in fast_services:
-                    fast_completed += 1
-                else:
-                    slow_completed += 1
-        else:
-            report["services"][service] = {
-                "found": False
-            }
+    if progress_doc:
+        services_status = progress_doc.get('services', {})
+        results_map = progress_doc.get('results', {})
+
+        for service in ALL_SERVICES:
+            svc_status = services_status.get(service)
+            if svc_status:
+                svc_results = results_map.get(service)
+                report["services"][service] = {
+                    "found": True,
+                    "status": svc_status.get("status"),
+                    "has_results": svc_results is not None,
+                    "results_keys": list(svc_results.keys()) if isinstance(svc_results, dict) else [],
+                    "error": svc_status.get("error"),
+                }
+                if svc_status.get("status") in ["completed", "failed"]:
+                    if service in FAST_SERVICES:
+                        fast_completed += 1
+                    else:
+                        slow_completed += 1
+            else:
+                report["services"][service] = {"found": False}
+    else:
+        for service in ALL_SERVICES:
+            report["services"][service] = {"found": False}
+        report["note"] = f"No domain_progress document found for domain={domain!r}"
 
     report["summary"] = {
-        "fast_completed": f"{fast_completed}/{len(fast_services)}",
-        "slow_completed": f"{slow_completed}/{len(slow_services)}",
+        "fast_completed": f"{fast_completed}/{len(FAST_SERVICES)}",
+        "slow_completed": f"{slow_completed}/{len(SLOW_SERVICES)}",
     }
 
     return jsonify(report), 200
