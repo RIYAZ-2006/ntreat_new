@@ -31,10 +31,17 @@ def record_service_result(scan_id, domain, service, status, results=None, error=
        a dotted-path $set, so concurrent scanners for the same domain can
        never overwrite each other's writes (the bug that was happening
        when every scanner wrote to the shared `scans` document instead).
+       This same write ALSO atomically increments completed_jobs, guarded
+       by an idempotency check -- completed_jobs must live here, next to
+       the data that proves the job is actually done, not solely behind a
+       separate HTTP hop that can fail independently of this write.
     2. Calls notify_orchestrator() -- a small, fixed-size HTTP ping, no
-       results payload -- so /job-done can bump completed_jobs and check
-       whether this domain's scan is finished. Results never travel over
-       HTTP; only the coordination signal does.
+       results payload -- so /job-done can check whether this domain's
+       scan is finished and kick off scoring. Results never travel over
+       HTTP; only the coordination signal does. If this ping fails after
+       all retries, completed_jobs is still correct in Mongo -- a sweep
+       job (see workers/sweep_stalled_domains.py) catches anything that
+       never got its /job-done ping through.
 
     Args:
         scan_id: The scan's UUID.
@@ -49,6 +56,19 @@ def record_service_result(scan_id, domain, service, status, results=None, error=
     db = get_db()
     domain_progress_collection = db['domain_progress']
 
+    # Idempotency guard: if this service already reported a terminal
+    # status for this domain/scan, don't increment completed_jobs again.
+    # Covers retried calls -- e.g. a worker crashing/retrying after the
+    # Mongo write already succeeded but before it got a response back.
+    existing = domain_progress_collection.find_one(
+        {"scan_id": scan_id, "domain": domain},
+        {f"services.{service}.status": 1}
+    )
+    already_terminal = (
+        existing is not None
+        and existing.get("services", {}).get(service, {}).get("status") in ("completed", "failed")
+    )
+
     update_fields = {
         f"services.{service}.status": status,
         f"services.{service}.error": str(error) if error else None,
@@ -57,9 +77,13 @@ def record_service_result(scan_id, domain, service, status, results=None, error=
     if status == "completed":
         update_fields[f"results.{service}"] = results
 
+    update_op = {"$set": update_fields}
+    if not already_terminal:
+        update_op["$inc"] = {"completed_jobs": 1}
+
     domain_progress_collection.update_one(
         {"scan_id": scan_id, "domain": domain},
-        {"$set": update_fields}
+        update_op
     )
 
     notify_orchestrator(scan_id, domain, service, status=status)

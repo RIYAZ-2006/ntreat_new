@@ -66,49 +66,54 @@ def get_scan_status(scan_id):
 def job_done():
     """
     Called by each of the 7 downstream services when they finish a single
-    domain's scan. Each call reports that service's own outcome
-    (status/error/results) into that domain's domain_progress document,
-    scoped by a dotted path (services.<service>, results.<service>) so
-    concurrent scanners for the same domain can never overwrite each
-    other's writes.
+    domain's scan. completed_jobs is now incremented atomically inside
+    orchestrator_client.record_service_result() (same write as the
+    services.<service>/results.<service> update), so this route no longer
+    owns that counter -- it just re-reads current state and, if the
+    domain has actually finished, scores it and checks the whole scan.
 
-    Once all 7 services have reported in, scores that domain (marking it
-    "completed" if every service succeeded, or "partial" if one or more
-    failed), then finalizes the whole scan once every domain is scored.
+    This means a failed/late /job-done ping can no longer permanently
+    strand a domain: the counter is already correct in Mongo by the time
+    this route is even called. This route (and the sweep job) are just
+    triggers to notice that and act on it.
     """
     data = request.get_json()
     scan_id = data.get('scan_id')
     domain = data.get('domain')
     service = data.get('service')
-    status = data.get('status', 'completed')
-    error = data.get('error')
-    results = data.get('results')
 
     if not scan_id or not domain or not service:
         return jsonify({"error": "scan_id, domain, and service are required"}), 400
 
-    update_fields = {
-        f"services.{service}.status": status,
-        f"services.{service}.error": error,
-        "last_updated": datetime.datetime.utcnow(),
-    }
-    # Only persist results on success -- a failed job shouldn't leave stale
-    # or partial result data sitting under results.<service>.
-    if status == "completed":
-        update_fields[f"results.{service}"] = results
+    check_domain_completion(scan_id, domain)
 
-    updated = domain_progress_collection.find_one_and_update(
-        {"scan_id": scan_id, "domain": domain},
-        {"$inc": {"completed_jobs": 1}, "$set": update_fields},
-        return_document=True
-    )
+    return jsonify({"status": "ok"}), 200
+
+
+def check_domain_completion(scan_id, domain):
+    """
+    Re-reads this domain's current progress doc and, if all jobs are in
+    and it hasn't already been scored, marks it completed/partial, scores
+    it, and finalizes the parent scan if every domain is done.
+
+    Guarded by status == 'in_progress' so a retried /job-done ping (or a
+    sweep job running concurrently) can't re-run scoring for a domain
+    that's already been scored.
+
+    Shared by /job-done and the periodic stalled-domain sweep, so both
+    paths use identical completion logic.
+    """
+    updated = domain_progress_collection.find_one({"scan_id": scan_id, "domain": domain})
 
     if not updated:
         print(
-            f"[/job-done] No domain_progress match for "
-            f"scan_id={scan_id!r} domain={domain!r} service={service!r}"
+            f"[check_domain_completion] No domain_progress match for "
+            f"scan_id={scan_id!r} domain={domain!r}"
         )
-        return jsonify({"error": "No matching domain_progress record"}), 404
+        return
+
+    if updated.get('status') != 'in_progress':
+        return  # already scored -- nothing to do
 
     if updated['completed_jobs'] >= updated['total_jobs']:
         failed_services = [
@@ -116,10 +121,12 @@ def job_done():
         ]
         final_status = "partial" if failed_services else "completed"
 
-        domain_progress_collection.update_one(
-            {"scan_id": scan_id, "domain": domain},
+        result = domain_progress_collection.update_one(
+            {"scan_id": scan_id, "domain": domain, "status": "in_progress"},
             {"$set": {"status": final_status}}
         )
+        if result.modified_count == 0:
+            return  # lost a race with another caller -- already handled
 
         _score_single_domain(scan_id, domain)
 
@@ -129,8 +136,6 @@ def job_done():
         })
         if remaining == 0:
             _finalize_scan_score(scan_id)
-
-    return jsonify({"status": "ok"}), 200
 
 
 def _score_single_domain(scan_id, domain):

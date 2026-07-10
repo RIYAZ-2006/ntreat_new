@@ -441,5 +441,18 @@ def debug_scan_summary(domain):
 
     return jsonify(report), 200
 
+@app.route('/debug/db-check')
+def debug_db_check():
+    db = get_db()
+    server_info = db.client.server_info()  # forces actual connection + confirms it's live
+    return jsonify({
+        "db_name": db.name,
+        "client_address": str(db.client.address),
+        "server_version": server_info.get("version"),
+        "connection_id": server_info.get("connectionId"),
+        "domain_progress_count": db['domain_progress'].count_documents({}),
+        "all_db_names": db.client.list_database_names(),
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=Config.PORT_SCORING, threaded=True)
