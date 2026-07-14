@@ -3,14 +3,31 @@ import { useParams } from 'react-router-dom';
 import api from '../api/client';
 
 export interface ScanData {
-  scan_id: string;
-  domain: string;
-  service: string;
   status: string;
-  created_at: string;
-  completed_at?: string;
+  error?: string | null;
   results?: any;
-  error?: string;
+}
+
+export interface ServiceScoreBreakdown {
+  score: number;
+  grade: string;
+  details: string[];
+  penalties: Record<string, number>;
+  skipped?: boolean;
+}
+
+export interface ScoreDoc {
+  domain: string;
+  scan_id: string;
+  calculated_at: string;
+  score: number;
+  grade: string;
+  components_analyzed: string[];
+  skipped_services: string[];
+  service_scores: Record<string, ServiceScoreBreakdown>;
+  service_weights: Record<string, number>;
+  details: string[];
+  penalties: Record<string, number>;
 }
 
 export interface ScanSummary {
@@ -18,7 +35,7 @@ export interface ScanSummary {
   domain_name: string | null;
   status: 'not_started' | 'in_progress' | 'completed';
   scans: Record<string, ScanData>;
-  score: any;
+  score: ScoreDoc | null;
   fast_services: { total: number; completed: number };
   slow_services: { total: number; completed: number };
 }

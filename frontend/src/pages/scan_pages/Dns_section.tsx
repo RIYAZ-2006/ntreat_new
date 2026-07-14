@@ -22,6 +22,14 @@ function DNSSection({ data }: { data: any }) {
   const warnings = data._warnings || [];
   const txtParsed = data.TXT_parsed || {};
 
+  // verification is a nested object {google: [], microsoft: [], other: []}
+  // not a flat array — flatten it here with provider labels attached
+  const verificationEntries: { provider: string; record: string }[] = [];
+  const verification = txtParsed.verification || {};
+  (verification.google || []).forEach((r: string) => verificationEntries.push({ provider: 'Google', record: r }));
+  (verification.microsoft || []).forEach((r: string) => verificationEntries.push({ provider: 'Microsoft', record: r }));
+  (verification.other || []).forEach((r: string) => verificationEntries.push({ provider: 'Other', record: r }));
+
   return (
     <div className="bg-white p-6 rounded-xl shadow-sm mb-8 border border-gray-200">
       <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-gray-900">
@@ -69,41 +77,37 @@ function DNSSection({ data }: { data: any }) {
                 <div className="text-sm font-semibold text-green-700 mb-3">SPF Configuration</div>
                 {txtParsed.spf.map((spf: any, idx: number) => (
                   <div key={idx} className="space-y-2">
-                    <div className="text-xs text-gray-400 font-mono break-all">{spf.raw}</div>
-                    {spf.parsed && (
-                      <>
-                        <div className="pl-3 border-l-2 border-green-400 space-y-1 text-xs">
-                          {spf.parsed.ip4?.length > 0 && <div><span className="text-gray-500">IPv4:</span> <span className="text-gray-700">{spf.parsed.ip4.join(', ')}</span></div>}
-                          {spf.parsed.ip6?.length > 0 && <div><span className="text-gray-500">IPv6:</span> <span className="text-gray-700">{spf.parsed.ip6.join(', ')}</span></div>}
-                          {spf.parsed.include?.length > 0 && <div><span className="text-gray-500">Includes:</span> <span className="text-gray-700">{spf.parsed.include.join(', ')}</span></div>}
-                          {spf.parsed.all && <div><span className="text-gray-500">Default:</span> <span className="text-gray-700">{spf.parsed.all}</span></div>}
+                    {/* spf is the flat parsed dict itself — no .raw/.parsed wrapper */}
+                    <div className="pl-3 border-l-2 border-green-400 space-y-1 text-xs">
+                      {spf.ip4?.length > 0 && <div><span className="text-gray-500">IPv4:</span> <span className="text-gray-700">{spf.ip4.join(', ')}</span></div>}
+                      {spf.ip6?.length > 0 && <div><span className="text-gray-500">IPv6:</span> <span className="text-gray-700">{spf.ip6.join(', ')}</span></div>}
+                      {spf.include?.length > 0 && <div><span className="text-gray-500">Includes:</span> <span className="text-gray-700">{spf.include.join(', ')}</span></div>}
+                      {spf.all && <div><span className="text-gray-500">Default:</span> <span className="text-gray-700">{spf.all}</span></div>}
+                    </div>
+                    <div className="mt-3 pt-3 border-t border-gray-200 space-y-1">
+                      <div className="flex items-center gap-2 text-xs">
+                        <FaCheckCircle className="text-green-400" />
+                        <span className="text-green-700">SPF record present</span>
+                      </div>
+                      {spf.all === '-all' && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <FaCheckCircle className="text-green-400" />
+                          <span className="text-green-700">Strict policy enforced (-all)</span>
                         </div>
-                        <div className="mt-3 pt-3 border-t border-gray-200 space-y-1">
-                          <div className="flex items-center gap-2 text-xs">
-                            <FaCheckCircle className="text-green-400" />
-                            <span className="text-green-700">SPF record present</span>
-                          </div>
-                          {spf.parsed.all === '-all' && (
-                            <div className="flex items-center gap-2 text-xs">
-                              <FaCheckCircle className="text-green-400" />
-                              <span className="text-green-700">Strict policy enforced (-all)</span>
-                            </div>
-                          )}
-                          {spf.parsed.all === '~all' && (
-                            <div className="flex items-center gap-2 text-xs">
-                              <FaExclamationTriangle className="text-yellow-400" />
-                              <span className="text-yellow-700">Soft fail policy (~all) — consider -all</span>
-                            </div>
-                          )}
-                          {spf.parsed.include?.length > 2 && (
-                            <div className="flex items-center gap-2 text-xs">
-                              <FaInfoCircle className="text-blue-400" />
-                              <span className="text-gray-700">Large authorized provider list ({spf.parsed.include.length} includes)</span>
-                            </div>
-                          )}
+                      )}
+                      {spf.all === '~all' && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <FaExclamationTriangle className="text-yellow-400" />
+                          <span className="text-yellow-700">Soft fail policy (~all) — consider -all</span>
                         </div>
-                      </>
-                    )}
+                      )}
+                      {spf.include?.length > 2 && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <FaInfoCircle className="text-blue-400" />
+                          <span className="text-gray-700">Large authorized provider list ({spf.include.length} includes)</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -118,20 +122,15 @@ function DNSSection({ data }: { data: any }) {
               </div>
             )}
 
-            {txtParsed.verification?.length > 0 && (
+            {verificationEntries.length > 0 && (
               <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
                 <div className="text-sm font-semibold text-blue-700 mb-2">Domain Verification</div>
-                {txtParsed.verification.map((record: string, idx: number) => {
-                  const provider = record.includes('google') ? 'Google'
-                    : record.includes('MS=') ? 'Microsoft'
-                    : record.includes('facebook') ? 'Facebook' : 'Other';
-                  return (
-                    <div key={idx} className="mb-2">
-                      <div className="text-xs font-semibold text-gray-500">{provider}</div>
-                      <div className="text-xs text-gray-700 font-mono break-all">{record}</div>
-                    </div>
-                  );
-                })}
+                {verificationEntries.map((entry, idx: number) => (
+                  <div key={idx} className="mb-2">
+                    <div className="text-xs font-semibold text-gray-500">{entry.provider}</div>
+                    <div className="text-xs text-gray-700 font-mono break-all">{entry.record}</div>
+                  </div>
+                ))}
               </div>
             )}
 

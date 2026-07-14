@@ -1,7 +1,7 @@
 import { useScanContext } from './ScanContext';
 import Overview_score from '../components/Overview_score';
 import {
-  FaExclamationTriangle, FaCheckCircle, FaSpinner, FaClock, FaTimes,FaTag,FaGlobe
+  FaExclamationTriangle, FaCheckCircle, FaSpinner, FaClock, FaTimes, FaTag, FaGlobe
 } from 'react-icons/fa';
 
 export default function Overview_page() {
@@ -16,8 +16,11 @@ export default function Overview_page() {
     }
   };
 
+  // Matches backend's FAST_SERVICES / SLOW_SERVICES exactly.
+  // "subdomain" is deliberately not here -- it's a scan-level step, not
+  // tracked per-domain in summary.scans (see scoring_service/app.py).
   const fastServices = ['dns', 'ip', 'ssl', 'webtech'];
-  const slowServices = ['subdomain', 'subdirectory', 'cve'];
+  const slowServices = ['subdirectory', 'cve', 'http_security'];
 
   if (loading) {
     return (
@@ -46,7 +49,6 @@ export default function Overview_page() {
   const slowServices_data = summary.slow_services || { completed: 0, total: 3 };
   const allFastServicesComplete = fastServices_data.completed === fastServices_data.total;
 
-  // Still loading fast services — show progress screen
   if (!allFastServicesComplete || Object.keys(scans).length === 0) {
     const progress = (fastServices_data.completed / fastServices_data.total) * 100;
 
@@ -98,7 +100,7 @@ export default function Overview_page() {
           </div>
 
           <div className="text-center text-sm text-gray-500">
-            <p>In-depth scans (Subdomain, Subdirectory, CVE) will run in the background</p>
+            <p>In-depth scans (Subdirectory, CVE, HTTP Security) will run in the background</p>
             <p className="mt-1">You'll see results as they complete</p>
           </div>
         </div>
@@ -106,38 +108,54 @@ export default function Overview_page() {
     );
   }
 
+  // Prefer reading directly from service_scores (already computed, robust
+  // to any future change in penalty naming) rather than reconstructing a
+  // qualitative label from flattened/prefixed penalty keys.
+  const serviceScores = score?.service_scores || {};
+
+  const qualitativeFromScore = (svcScore: number | undefined) => {
+    if (svcScore === undefined) return 'Unavailable';
+    if (svcScore >= 90) return 'Strong';
+    if (svcScore >= 70) return 'Adequate';
+    if (svcScore >= 50) return 'Weak';
+    return 'Poor';
+  };
+
+  const cvePenaltyTotal =
+    (score?.penalties?.cve_critical_cves || 0) +
+    (score?.penalties?.cve_high_cves || 0) +
+    (score?.penalties?.cve_medium_cves || 0) +
+    (score?.penalties?.cve_low_cves || 0);
+
   return (
     <div className="space-y-6">
       {domain_name ? (
-                    <>
-                        <h1 className="text-3xl font-bold text-gray-900 mb-2">
-                        <FaTag className="text-blue-400 text-2xl" />
-                        {domain_name}
-                        </h1>
+        <>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            <FaTag className="text-blue-400 text-2xl" />
+            {domain_name}
+          </h1>
+          <p className="text-gray-500 font-mono flex items-center gap-2">
+            <FaGlobe className="text-blue-500" />
+            {domain}
+          </p>
+        </>
+      ) : (
+        <>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            Domain Name
+          </h1>
+          <p className="text-gray-500 font-mono flex items-center gap-2">
+            <FaGlobe className="text-blue-500" />
+            {domain}
+          </p>
+        </>
+      )}
 
-                        <p className="text-gray-500 font-mono flex items-center gap-2">
-                        <FaGlobe className="text-blue-500" />
-                        {domain}
-                        </p>
-                    </>
-                    ) : (
-                    <>
-                        <h1 className="text-3xl font-bold text-gray-900 mb-2">
-                        Domain Name
-                        </h1>
+      <p className="text-sm text-gray-400 mt-2">
+        Security Assessment Results
+      </p>
 
-                        <p className="text-gray-500 font-mono flex items-center gap-2">
-                        <FaGlobe className="text-blue-500" />
-                        {domain}
-                        </p>
-                    </>
-                    )}
-
-                    <p className="text-sm text-gray-400 mt-2">
-                    Security Assessment Results
-                    </p>
-      {/* Score summary card */}
-      
       {score && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm flex items-center gap-6">
@@ -157,26 +175,15 @@ export default function Overview_page() {
             <div className="space-y-3 text-sm">
               <div className="flex justify-between border-b pb-2">
                 <span className="text-gray-600">TLS Configuration</span>
-                <span className="font-semibold">{(() => {
-                  const p = (score.penalties?.weak_ciphers || 0) + (score.penalties?.legacy_tls || 0) +
-                            (score.penalties?.no_tls13 || 0) + (score.penalties?.no_hsts || 0) +
-                            (score.penalties?.cert_expired || 0) + (score.penalties?.cert_expiring || 0);
-                  return p === 0 ? 'Strong' : p <= 8 ? 'Adequate' : p <= 15 ? 'Weak' : 'Poor';
-                })()}</span>
+                <span className="font-semibold">{qualitativeFromScore(serviceScores.ssl?.score)}</span>
               </div>
               <div className="flex justify-between border-b pb-2">
                 <span className="text-gray-600">DNS Security</span>
-                <span className="font-semibold">{(() => {
-                  const p = (score.penalties?.no_spf || 0) + (score.penalties?.no_dmarc || 0);
-                  return p === 0 ? 'Strong' : p <= 5 ? 'Adequate' : 'Weak';
-                })()}</span>
+                <span className="font-semibold">{qualitativeFromScore(serviceScores.dns?.score)}</span>
               </div>
               <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-600">Subdomain Exposure</span>
-                <span className="font-semibold">{(() => {
-                  const c = scans.subdomain?.results?.count || 0;
-                  return c === 0 ? 'None' : c <= 10 ? 'Low' : c <= 30 ? 'Moderate' : 'Elevated';
-                })()}</span>
+                <span className="text-gray-600">HTTP Security</span>
+                <span className="font-semibold">{qualitativeFromScore(serviceScores.http_security?.score)}</span>
               </div>
               <div className="flex justify-between border-b pb-2">
                 <span className="text-gray-600">Directory Exposure</span>
@@ -187,17 +194,18 @@ export default function Overview_page() {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">Vulnerabilities</span>
-                <span className="font-semibold">{(() => {
-                  const p = score.penalties?.vulnerabilities || 0;
-                  return p === 0 ? 'None Detected' : p <= 10 ? 'Low Severity' : p <= 20 ? 'Moderate' : 'High Severity';
-                })()}</span>
+                <span className="font-semibold">{
+                  cvePenaltyTotal === 0 ? 'None Detected'
+                  : cvePenaltyTotal <= 10 ? 'Low Severity'
+                  : cvePenaltyTotal <= 20 ? 'Moderate'
+                  : 'High Severity'
+                }</span>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Service status grid */}
       <div>
         <h3 className="text-sm font-semibold text-gray-600 mb-2 flex items-center gap-2">
           <FaCheckCircle className="text-green-500" />
@@ -231,7 +239,9 @@ export default function Overview_page() {
                 <div className="flex justify-center mb-2">
                   {scan ? getStatusIcon(scan.status) : <FaClock className="text-gray-600" />}
                 </div>
-                <div className="text-sm font-semibold capitalize">{service}</div>
+                <div className="text-sm font-semibold capitalize">
+                  {service === 'http_security' ? 'HTTP Security' : service}
+                </div>
                 {scan?.status === 'processing' && (
                   <div className="text-xs text-gray-400 mt-1">May take 5–20 min</div>
                 )}
@@ -242,19 +252,19 @@ export default function Overview_page() {
       </div>
 
       <Overview_score
-      score={
-        Object.values(scans).every(s => s?.status === 'completed')
-          ? score
-          : null
-      }
-      findingsCount={
-        Object.values(scans).every(s => s?.status === 'completed')
-          ? (score?.penalties
-              ? Object.values(score.penalties as Record<string, number>).filter(v => v > 0).length
-              : 0)
-          : 0
-      }
-    />
+        score={
+          Object.values(scans).every(s => s?.status === 'completed')
+            ? score
+            : null
+        }
+        findingsCount={
+          Object.values(scans).every(s => s?.status === 'completed')
+            ? (score?.penalties
+                ? Object.values(score.penalties as Record<string, number>).filter(v => v > 0).length
+                : 0)
+            : 0
+        }
+      />
     </div>
   );
 }

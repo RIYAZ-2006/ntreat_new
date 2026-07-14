@@ -3,39 +3,43 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { FaSearch, FaClock, FaCheckCircle, FaSpinner, FaExclamationCircle, FaTrash, FaTag } from 'react-icons/fa';
 
-interface Scan {
+interface ScanGroup {
   scan_id: string;
   domain: string;
   domain_name: string | null;
-  service: string;
-  status: string;
+  org_name: string | null;
+  status: string;               // pending | scanning_subdomains | in_progress | completed | failed
+  total_jobs: number;
+  completed_jobs: number;
+  domains_count: number;
+  overall_score: number | null;
+  overall_grade: string | null;
   created_at: string;
   completed_at?: string;
 }
 
-interface GroupedScan {
-  domain: string;
-  domain_name: string | null;
-  latest_date: string;
-  scans: Scan[];
-}
+const GRADE_COLOR: Record<string, string> = {
+  'A+': 'text-green-600', 'A': 'text-green-600', 'A-': 'text-green-600',
+  'B+': 'text-lime-600', 'B': 'text-lime-600', 'B-': 'text-lime-600',
+  'C+': 'text-yellow-600', 'C': 'text-yellow-600', 'C-': 'text-yellow-600',
+  'F': 'text-red-600',
+};
 
 export default function Home() {
   const [domain, setDomain] = useState('');
   const [domain_name, setdomain_name] = useState('');
   const [loading, setLoading] = useState(false);
   const [fetchingHistory, setFetchingHistory] = useState(true);
-  const [recentScans, setRecentScans] = useState<GroupedScan[]>([]);
+  const [recentScans, setRecentScans] = useState<ScanGroup[]>([]);
   const navigate = useNavigate();
 
   useEffect(() => {
     fetchRecentScans().finally(() => setFetchingHistory(false));
 
     const interval = setInterval(() => {
-      const hasActiveScans = recentScans.some(group =>
-        group.scans.some(s => s.status === 'processing' || s.status === 'queued')
+      const hasActiveScans = recentScans.some(
+        g => g.status !== 'completed' && g.status !== 'failed'
       );
-
       if (hasActiveScans || recentScans.length === 0) {
         fetchRecentScans();
       }
@@ -47,8 +51,7 @@ export default function Home() {
   const fetchRecentScans = async () => {
     try {
       const res = await api.get('/scoring/scans/grouped');
-      const groups = res.data.groups || [];
-      setRecentScans(groups);
+      setRecentScans(res.data.groups || []);
     } catch (err) {
       console.error('Failed to fetch scans:', err);
     }
@@ -64,18 +67,11 @@ export default function Home() {
     setLoading(true);
 
     try {
-      // Single call to the orchestrator — it handles subdomain discovery,
-      // fanning out to all 7 scan services per domain, and scoring.
-      // Previously this fired 7 separate direct calls; that bypassed
-      // the orchestrator entirely and skipped subdomain discovery + scoring.
       await api.post('/orchrestator/scan', {
         domain: cleanDomain,
         org_name: domain_name.trim() || null,
       });
 
-      // Save a friendly display name to the scoring service's scan docs
-      // (separate field from orchestrator's org_name — used by the
-      // grouped-scans view on this page)
       if (domain_name.trim()) {
         await api.post('/scoring/domain-name', {
           domain: cleanDomain,
@@ -92,36 +88,27 @@ export default function Home() {
     }
   };
 
-  const getScanStatus = (scans: Scan[]) => {
-    const total = scans.length;
-    const completed = scans.filter(s => s.status === 'completed').length;
-    const failed = scans.filter(s => s.status === 'failed').length;
-    const processing = scans.filter(s => s.status === 'processing' || s.status === 'queued').length;
-    return { total, completed, failed, processing };
-  };
-
-  const getStatusBadge = (scans: Scan[]) => {
-    const { failed, processing } = getScanStatus(scans);
-
-    if (processing > 0) {
-      return (
-        <span className="flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
-          <FaSpinner className="animate-spin" /> In Progress
-        </span>
-      );
-    } else if (failed > 0) {
-      return (
-        <span className="flex items-center gap-1.5 text-xs font-medium text-orange-700 bg-orange-50 border border-orange-200 px-2.5 py-1 rounded-full">
-          <FaExclamationCircle /> Partial
-        </span>
-      );
-    } else {
+  const getStatusBadge = (scan: ScanGroup) => {
+    if (scan.status === 'completed') {
       return (
         <span className="flex items-center gap-1.5 text-xs font-medium text-green-700 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full">
           <FaCheckCircle /> Complete
         </span>
       );
     }
+    if (scan.status === 'failed') {
+      return (
+        <span className="flex items-center gap-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full">
+          <FaExclamationCircle /> Failed
+        </span>
+      );
+    }
+    // pending | scanning_subdomains | in_progress
+    return (
+      <span className="flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+        <FaSpinner className="animate-spin" /> {scan.status === 'scanning_subdomains' ? 'Discovering Subdomains' : 'In Progress'}
+      </span>
+    );
   };
 
   const deleteScan = async (domain: string, e: React.MouseEvent) => {
@@ -140,13 +127,11 @@ export default function Home() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900 mb-1">Security Scanner</h1>
         <p className="text-gray-500">Comprehensive domain security assessment</p>
       </div>
 
-      {/* New Scan Input */}
       <div className="bg-gradient-to-r from-blue-600 to-blue-700 p-8 rounded-xl shadow-md mb-10">
         <p className="text-blue-100 text-sm font-medium mb-3 uppercase tracking-wide">New Assessment</p>
         <form onSubmit={startNewScan} className="space-y-3">
@@ -189,7 +174,6 @@ export default function Home() {
         </form>
       </div>
 
-      {/* Recent Scans */}
       <div>
         <h2 className="text-lg font-semibold text-gray-900 mb-5 flex items-center gap-2">
           <FaClock className="text-blue-500" />
@@ -209,33 +193,33 @@ export default function Home() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {recentScans.map((group: GroupedScan, idx: number) => {
-              const { total, completed, failed, processing } = getScanStatus(group.scans);
+            {recentScans.map((scan) => {
+              const progress = scan.total_jobs > 0 ? (scan.completed_jobs / scan.total_jobs) * 100 : 0;
 
               return (
                 <div
-                  key={idx}
-                  onClick={() => navigate(`/scan/${group.domain}`)}
+                  key={scan.scan_id}
+                  onClick={() => navigate(`/scan/${scan.domain}`)}
                   className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 transition-all hover:shadow-md hover:border-blue-300 cursor-pointer"
                 >
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex-1 min-w-0">
-                      {group.domain_name ? (
+                      {scan.domain_name ? (
                         <>
-                          <h3 className="text-base font-semibold text-gray-900 truncate mb-0.5">{group.domain_name}</h3>
-                          <p className="text-xs text-gray-400 font-mono truncate">{group.domain}</p>
+                          <h3 className="text-base font-semibold text-gray-900 truncate mb-0.5">{scan.domain_name}</h3>
+                          <p className="text-xs text-gray-400 font-mono truncate">{scan.domain}</p>
                         </>
                       ) : (
-                        <h3 className="text-base font-semibold text-gray-900 truncate mb-0.5">{group.domain}</h3>
+                        <h3 className="text-base font-semibold text-gray-900 truncate mb-0.5">{scan.domain}</h3>
                       )}
                       <p className="text-xs text-gray-400 mt-0.5">
-                        {new Date(group.latest_date).toLocaleString()}
+                        {new Date(scan.created_at).toLocaleString()}
                       </p>
                     </div>
                     <div className="flex items-center gap-2 ml-2 flex-shrink-0">
-                      {getStatusBadge(group.scans)}
+                      {getStatusBadge(scan)}
                       <button
-                        onClick={(e) => deleteScan(group.domain, e)}
+                        onClick={(e) => deleteScan(scan.domain, e)}
                         className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
                         title="Delete scan"
                       >
@@ -246,23 +230,19 @@ export default function Home() {
 
                   <div className="space-y-1.5 mb-4">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">Services</span>
-                      <span className="text-gray-700 font-medium">{total}</span>
+                      <span className="text-gray-500">Domains Scanned</span>
+                      <span className="text-gray-700 font-medium">{scan.domains_count || '—'}</span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">Completed</span>
-                      <span className="text-green-600 font-medium">{completed}</span>
+                      <span className="text-gray-500">Jobs Completed</span>
+                      <span className="text-gray-700 font-medium">{scan.completed_jobs} / {scan.total_jobs}</span>
                     </div>
-                    {processing > 0 && (
+                    {scan.status === 'completed' && scan.overall_grade && (
                       <div className="flex items-center justify-between text-xs">
-                        <span className="text-gray-500">Processing</span>
-                        <span className="text-amber-600 font-medium">{processing}</span>
-                      </div>
-                    )}
-                    {failed > 0 && (
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-gray-500">Failed</span>
-                        <span className="text-red-500 font-medium">{failed}</span>
+                        <span className="text-gray-500">Overall Grade</span>
+                        <span className={`font-bold ${GRADE_COLOR[scan.overall_grade] || 'text-gray-700'}`}>
+                          {scan.overall_grade} ({scan.overall_score})
+                        </span>
                       </div>
                     )}
                   </div>
@@ -270,7 +250,7 @@ export default function Home() {
                   <div className="w-full bg-gray-100 rounded-full h-1.5">
                     <div
                       className="bg-gradient-to-r from-blue-500 to-green-500 h-1.5 rounded-full transition-all"
-                      style={{ width: `${(completed / total) * 100}%` }}
+                      style={{ width: `${progress}%` }}
                     />
                   </div>
                 </div>

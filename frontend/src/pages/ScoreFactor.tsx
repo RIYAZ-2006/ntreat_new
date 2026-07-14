@@ -37,17 +37,16 @@ const SERVICE_META: Record<string, { label: string; desc: string; icon: string }
   dns:           { label: 'DNS Security',         icon: '🌐', desc: 'SPF, DMARC, DKIM, DNSSEC, CAA and MX record presence' },
   ip:            { label: 'IP / Network',         icon: '📡', desc: 'Exposed risky ports, reverse DNS. No reputation data.' },
   webtech:       { label: 'Web Technologies',     icon: '⚙️', desc: 'EOL / outdated tech, server version leakage, exposed admin panels' },
-  subdomain:     { label: 'Subdomain Exposure',   icon: '🔍', desc: 'Subdomain count, dangling CNAMEs, wildcard DNS' },
   subdirectory:  { label: 'Directory Exposure',   icon: '📂', desc: 'Sensitive paths (.git, .env, backup), directory listing, admin endpoints' },
 };
 
 const SERVICE_WEIGHTS: Record<string, number> = {
   cve: 0.25, ssl: 0.20, http_security: 0.20,
-  dns: 0.15, ip: 0.05, webtech: 0.05, subdomain: 0.05, subdirectory: 0.05,
+  dns: 0.15, ip: 0.05, webtech: 0.05, subdirectory: 0.05,
 };
 
 // highest weight first
-const SERVICE_ORDER = ['cve', 'ssl', 'http_security', 'dns', 'ip', 'webtech', 'subdomain', 'subdirectory'];
+const SERVICE_ORDER = ['cve', 'ssl', 'http_security', 'dns', 'ip', 'webtech', 'subdirectory'];
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 

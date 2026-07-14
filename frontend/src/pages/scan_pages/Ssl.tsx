@@ -30,6 +30,10 @@ function SSLSection({ data }: { data: any }) {
     return 'text-green-500';
   };
 
+  const certUnreachable = !!certificate.error;
+  const certVerificationFailed = !!certificate.verification_error;
+  const hasCertData = certificate.valid_until && !certUnreachable;
+
   return (
     <div className="bg-white p-6 rounded-xl shadow-sm mb-8 border border-gray-200">
       <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-gray-900">
@@ -37,7 +41,32 @@ function SSLSection({ data }: { data: any }) {
         SSL / TLS Analysis
       </h2>
 
-      {certificate.expiry && (
+      {certUnreachable && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <div className="flex items-start gap-2">
+            <FaExclamationTriangle className="text-red-500 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="font-semibold text-red-700 mb-1">Certificate Could Not Be Retrieved</div>
+              <div className="text-sm text-red-600">{certificate.error}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {certVerificationFailed && (
+        <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg">
+          <div className="flex items-start gap-2">
+            <FaExclamationTriangle className="text-orange-500 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="font-semibold text-orange-700 mb-1">Certificate Failed Verification</div>
+              <div className="text-sm text-orange-600">{certificate.verification_error}</div>
+              <div className="text-xs text-gray-500 mt-1">Likely self-signed, expired, or hostname mismatch.</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hasCertData && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
             <div className="text-sm font-semibold text-blue-700 mb-3">Certificate Info</div>
@@ -46,12 +75,19 @@ function SSLSection({ data }: { data: any }) {
               <div><span className="text-gray-500">Issuer:</span><span className="ml-2 text-gray-800 font-mono">{certificate.issuer || 'N/A'}</span></div>
               <div>
                 <span className="text-gray-500">Expires:</span>
-                <span className={`ml-2 font-semibold ${getExpiryColor(certificate.days_remaining || 0)}`}>{certificate.expiry}</span>
+                <span className={`ml-2 font-semibold ${getExpiryColor(certificate.days_remaining ?? 999)}`}>
+                  {certificate.valid_until ? new Date(certificate.valid_until).toLocaleDateString() : 'N/A'}
+                </span>
               </div>
               <div>
                 <span className="text-gray-500">Days Remaining:</span>
-                <span className={`ml-2 font-bold text-lg ${getExpiryColor(certificate.days_remaining || 0)}`}>{certificate.days_remaining}</span>
+                <span className={`ml-2 font-bold text-lg ${getExpiryColor(certificate.days_remaining ?? 999)}`}>{certificate.days_remaining}</span>
               </div>
+              {certificate.verified === false && (
+                <div className="flex items-center gap-2 text-xs text-orange-600 pt-1">
+                  <FaExclamationTriangle /> Retrieved without verification
+                </div>
+              )}
             </div>
           </div>
 

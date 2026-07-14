@@ -39,7 +39,16 @@ def health():
 
 @app.route('/domain-name', methods=['POST'])
 def set_domain_name():
-    """Store a friendly display name on all scan documents for this domain"""
+    """
+    Store a friendly display name on the scan document for this root domain.
+
+    NOTE: `scans` documents key on `root_domain`, not `domain` -- there is
+    no `domain` field on a `scans` doc (only on `domain_progress`/`scores`).
+    Matching on the wrong field here previously meant this update_many()
+    silently matched zero documents and domain_name never got saved.
+    domain_name is intentionally scoped to the root domain only (labels
+    the whole scan), not every subdomain in `domains`.
+    """
     data = request.get_json()
     domain = data.get('domain')
     domain_name = data.get('domain_name', '').strip()
@@ -49,7 +58,7 @@ def set_domain_name():
 
     db = get_db()
     db['scans'].update_many(
-        {"domain": domain},
+        {"root_domain": domain},
         {"$set": {"domain_name": domain_name if domain_name else None}}
     )
 
@@ -111,6 +120,11 @@ def get_score(domain):
 
 @app.route('/scans', methods=['GET'])
 def get_scans():
+    """
+    NOTE: `scans` docs are keyed by `root_domain`, and no longer carry a
+    per-service `service`/`error` field (those moved to domain_progress) --
+    projection updated to match what actually exists on these documents now.
+    """
     db = get_db()
     scans_collection = db['scans']
 
@@ -120,21 +134,22 @@ def get_scans():
 
     query = {}
     if domain:
-        query['domain'] = domain
+        query['root_domain'] = domain
 
     projection = {
         "_id": 0,
         "scan_id": 1,
-        "domain": 1,
-        "service": 1,
+        "root_domain": 1,
+        "domain_name": 1,
         "status": 1,
         "created_at": 1,
         "completed_at": 1
     }
 
     if include_results:
-        projection["results"] = 1
-        projection["error"] = 1
+        projection["domains"] = 1
+        projection["overall_score"] = 1
+        projection["overall_grade"] = 1
 
     scans = list(scans_collection.find(query, projection).sort("created_at", -1).limit(limit))
 
@@ -147,44 +162,10 @@ def get_recent_scans():
     db = get_db()
     scans = list(db['scans'].find(
         {},
-        {"_id": 0, "scan_id": 1, "domain": 1, "service": 1, "status": 1, "created_at": 1, "completed_at": 1}
+        {"_id": 0, "scan_id": 1, "root_domain": 1, "status": 1, "created_at": 1, "completed_at": 1}
     ).sort("created_at", -1).limit(100))
     return jsonify({"scans": scans}), 200
 
-@app.route('/scans/grouped', methods=['GET'])
-def get_grouped_scans():
-    """Aggregated endpoint: returns recent scans grouped by domain"""
-    db = get_db()
-
-    # MongoDB aggregation pipeline
-    pipeline = [
-        {"$sort": {"created_at": -1}},
-        {"$group": {
-            "_id": "$domain",
-            "domain": {"$first": "$domain"},
-            "domain_name": {"$first": "$domain_name"},
-            "latest_date": {"$first": "$created_at"},
-            "scans": {"$push": {
-                "scan_id": "$scan_id",
-                "service": "$service",
-                "status": "$status",
-                "created_at": "$created_at",
-                "completed_at": "$completed_at"
-            }}
-        }},
-        {"$sort": {"latest_date": -1}},
-        {"$limit": 50},
-        {"$project": {
-            "_id": 0,
-            "domain": 1,
-            "domain_name": 1,
-            "latest_date": 1,
-            "scans": 1
-        }}
-    ]
-
-    grouped = list(db['scans'].aggregate(pipeline))
-    return jsonify({"groups": grouped}), 200
 
 @app.route('/scan/summary/<domain>', methods=['GET'])
 def get_scan_summary(domain):
@@ -279,9 +260,11 @@ def get_scan_summary(domain):
         else:
             score = score_doc
 
-    # Fetch friendly domain name from any scan doc for this domain
+    # Fetch friendly domain name from the parent scan doc for this root
+    # domain. Same fix as /domain-name above -- must match on root_domain,
+    # not domain, since that's the field that actually exists on `scans`.
     name_doc = db['scans'].find_one(
-        {"domain": domain, "domain_name": {"$exists": True, "$ne": None}},
+        {"root_domain": domain, "domain_name": {"$exists": True, "$ne": None}},
         {"_id": 0, "domain_name": 1}
     )
     domain_name = name_doc['domain_name'] if name_doc else None
@@ -318,7 +301,7 @@ def stream_scan_updates(domain):
     (the same shape as /scan/summary/<domain>), not the raw per-service pubsub
     payload. The frontend's onmessage handler only calls setSummary() when
     data.scans exists, and only closes the stream when the *overall* status
-    is 'completed' — so relaying raw pubsub messages breaks both of those.
+    is 'completed' -- so relaying raw pubsub messages breaks both of those.
     """
     def generate():
         pubsub = redis_conn.pubsub()
@@ -339,7 +322,7 @@ def stream_scan_updates(domain):
         except Exception:
             pass
 
-        # Listen for updates — on every pubsub ping, recompute the FULL
+        # Listen for updates -- on every pubsub ping, recompute the FULL
         # summary and send that, rather than relaying the raw message.
         try:
             for message in pubsub.listen():
@@ -360,10 +343,17 @@ def stream_scan_updates(domain):
 
 @app.route('/scans/<domain>', methods=['DELETE'])
 def delete_scans(domain):
-    """Delete all scans for a given domain"""
+    """
+    Delete all scans for a given domain. `domain` here is a root domain
+    (used from Home.tsx's per-scan-card delete button), so `scans` docs
+    match on root_domain -- domain_progress still matches on domain since
+    each subdomain has its own domain_progress doc but there's only ever
+    one `scans` doc per whole scan (root_domain), regardless of how many
+    subdomains it contains.
+    """
     try:
         db = get_db()
-        result = db['scans'].delete_many({"domain": domain})
+        result = db['scans'].delete_many({"root_domain": domain})
         db['domain_progress'].delete_many({"domain": domain})
 
         # Also clear Redis cache
@@ -377,82 +367,40 @@ def delete_scans(domain):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/debug/summary/<domain>', methods=['GET'])
-def debug_scan_summary(domain):
-    """Debug route to inspect raw scan data from domain_progress"""
-    report = {
-        "domain": domain,
-        "redis": None,
-        "services": {},
-        "summary": {}
-    }
-
-    # Check Redis
-    try:
-        cache_key = f"scan_summary:{domain}"
-        cached = redis_conn.get(cache_key)
-        report["redis"] = {
-            "status": "connected",
-            "cache_hit": cached is not None
-        }
-    except Exception as e:
-        report["redis"] = {
-            "status": "error",
-            "error": str(e)
-        }
-
+@app.route('/scans/grouped', methods=['GET'])
+def get_grouped_scans():
+    """
+    One entry per scan_id -- `scans` now holds exactly one orchestrator-owned
+    document per scan (per-service results moved to domain_progress), so
+    there's nothing left to $group; just query and reshape directly.
+    """
     db = get_db()
-    progress_doc = _get_latest_domain_progress(db, domain)
+    docs = list(db['scans'].find(
+        {},
+        {
+            "_id": 0, "scan_id": 1, "root_domain": 1, "domain_name": 1,
+            "org_name": 1, "status": 1, "created_at": 1, "completed_at": 1,
+            "total_jobs": 1, "completed_jobs": 1, "domains": 1,
+            "overall_score": 1, "overall_grade": 1
+        }
+    ).sort("created_at", -1).limit(50))
 
-    fast_completed = 0
-    slow_completed = 0
+    groups = [{
+        "scan_id": d.get("scan_id"),
+        "domain": d.get("root_domain"),
+        "domain_name": d.get("domain_name"),
+        "org_name": d.get("org_name"),
+        "status": d.get("status", "pending"),
+        "total_jobs": d.get("total_jobs", 0),
+        "completed_jobs": d.get("completed_jobs", 0),
+        "domains_count": len(d.get("domains") or []),
+        "overall_score": d.get("overall_score"),
+        "overall_grade": d.get("overall_grade"),
+        "created_at": d.get("created_at"),
+        "completed_at": d.get("completed_at"),
+    } for d in docs]
 
-    if progress_doc:
-        services_status = progress_doc.get('services', {})
-        results_map = progress_doc.get('results', {})
-
-        for service in ALL_SERVICES:
-            svc_status = services_status.get(service)
-            if svc_status:
-                svc_results = results_map.get(service)
-                report["services"][service] = {
-                    "found": True,
-                    "status": svc_status.get("status"),
-                    "has_results": svc_results is not None,
-                    "results_keys": list(svc_results.keys()) if isinstance(svc_results, dict) else [],
-                    "error": svc_status.get("error"),
-                }
-                if svc_status.get("status") in ["completed", "failed"]:
-                    if service in FAST_SERVICES:
-                        fast_completed += 1
-                    else:
-                        slow_completed += 1
-            else:
-                report["services"][service] = {"found": False}
-    else:
-        for service in ALL_SERVICES:
-            report["services"][service] = {"found": False}
-        report["note"] = f"No domain_progress document found for domain={domain!r}"
-
-    report["summary"] = {
-        "fast_completed": f"{fast_completed}/{len(FAST_SERVICES)}",
-        "slow_completed": f"{slow_completed}/{len(SLOW_SERVICES)}",
-    }
-
-    return jsonify(report), 200
-
-@app.route('/debug/db-check')
-def debug_db_check():
-    db = get_db()
-    server_info = db.client.server_info()  # forces actual connection + confirms it's live
-    return jsonify({
-        "db_name": db.name,
-        "client_address": str(db.client.address),
-        "server_version": server_info.get("version"),
-        "connection_id": server_info.get("connectionId"),
-        "domain_progress_count": db['domain_progress'].count_documents({}),
-        "all_db_names": db.client.list_database_names(),
-    })
+    return jsonify({"groups": groups}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=Config.PORT_SCORING, threaded=True)

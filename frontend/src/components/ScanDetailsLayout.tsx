@@ -14,7 +14,6 @@ const NAV_SECTIONS = [
   { id: 'ssl',          label: 'SSL / TLS',         icon: FaLock,              path: 'ssl' },
   { id: 'webtech',      label: 'Web Technologies',  icon: FaCode,              path: 'webtech' },
   { id: 'cve',          label: 'Vulnerabilities',   icon: FaExclamationCircle, path: 'cve' },
-  { id: 'subdomain',    label: 'Subdomains',        icon: FaGlobe,             path: 'subdomain' },
   { id: 'subdirectory', label: 'Directories',       icon: FaFolder,            path: 'subdirectory' },
   { id: 'http_security', label: 'Http Security',    icon: FaGlobe,            path: 'http_security' },
   { id: 'scan_details', label: 'Scan Details',    icon: FaGlobe,            path:'scandetails' }
@@ -25,7 +24,6 @@ function GradeBadge({ grade }: { grade: string }) {
     grade === 'A' ? 'bg-green-600' :
     grade === 'B' ? 'bg-blue-600' :
     grade === 'C' ? 'bg-yellow-500' :
-    grade === 'D' ? 'bg-orange-500' :
     'bg-red-600';
 
   return (
@@ -37,7 +35,7 @@ function GradeBadge({ grade }: { grade: string }) {
 
 const SERVICE_FOR_SECTION: Record<string, string> = {
   dns: 'dns', ip: 'ip', ssl: 'ssl', webtech: 'webtech',
-  cve: 'cve', subdomain: 'subdomain', subdirectory: 'subdirectory',
+  cve: 'cve', subdirectory: 'subdirectory',
   http_security: 'http_security'
 };
 

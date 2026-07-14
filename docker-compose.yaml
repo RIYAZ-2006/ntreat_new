@@ -98,7 +98,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     depends_on:
       - mongodb
       - redis
@@ -113,7 +113,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     depends_on:
       - mongodb
       - redis
@@ -170,7 +170,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
       interval: 30s
@@ -191,7 +191,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
       interval: 30s
@@ -212,7 +212,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
       interval: 30s
@@ -233,7 +233,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
       interval: 30s
@@ -254,7 +254,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5007/health"]
       interval: 30s
@@ -275,7 +275,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
       interval: 30s
@@ -296,7 +296,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongodb:27017/ntreat
       - REDIS_URL=redis://redis:6379/0
-      - ORCHESTRATOR_URL=http://orchrestator:5011
+      - ORCHRESTATOR_SERVICE_URL=http://orchrestator:5011
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5010/health"]
       interval: 30s

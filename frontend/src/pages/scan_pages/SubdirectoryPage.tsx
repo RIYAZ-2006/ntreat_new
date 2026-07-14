@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useScanData } from '../Userscandata';
 import { LoadingCard, PageSpinner } from '../Sharedscan';
-import { FaFolder, FaInfoCircle } from 'react-icons/fa';
+import { FaFolder, FaInfoCircle, FaExclamationTriangle } from 'react-icons/fa';
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
@@ -35,6 +35,7 @@ export default function SubdirectoryPage() {
 
   const data = scan.results;
   const paths = data.found_paths || [];
+  const directoryListings: string[] = data.directory_listings || [];
   const totalTested = data.total_tested || 0;
   const statusCounts = data.status_counts || {};
   const phaseReached = data.phase_reached || 1;
@@ -51,10 +52,26 @@ export default function SubdirectoryPage() {
         Directory Scan Results
       </h2>
 
+      {directoryListings.length > 0 && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <div className="flex items-start gap-2">
+            <FaExclamationTriangle className="text-red-500 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="font-semibold text-red-700 mb-1">
+                Directory Listing Enabled ({directoryListings.length})
+              </div>
+              <div className="space-y-1">
+                {directoryListings.map((path, idx) => (
+                  <div key={idx} className="text-xs text-red-600 font-mono">{path}</div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Scan info */}
         <div className="space-y-6">
-          {/* Phase & wordlist summary */}
           {wordlistsUsed.length > 0 && (
             <div>
               <h3 className="text-lg font-semibold mb-3 text-gray-900">Scan Phases</h3>
@@ -77,7 +94,6 @@ export default function SubdirectoryPage() {
             </div>
           )}
 
-          {/* Scan statistics */}
           {totalTested > 0 && (
             <div>
               <h3 className="text-lg font-semibold mb-3 text-gray-900">Scan Statistics</h3>
@@ -95,7 +111,6 @@ export default function SubdirectoryPage() {
           )}
         </div>
 
-        {/* Right: Found paths */}
         <div>
           <h3 className="text-lg font-semibold mb-3 text-gray-900">
             {paths.length === 0
